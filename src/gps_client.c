@@ -13,7 +13,7 @@
 #define UART_TX_PIN 8
 #define UART_RX_PIN 9
 
-#define HOST "serverpico.onrender.com"
+#define HOST "server-findway.onrender.com"
 #define URL_REQUEST "/mensagem?msg="
 #define BUFFER_SIZE 512
 
@@ -128,7 +128,7 @@ void read_gps_loop() {
 
 int main() {
     stdio_init_all();
-    sleep_ms(2000);
+    sleep_ms(200);
     printf("Iniciando...\n");
 
     setup_uart();

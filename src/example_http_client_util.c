@@ -48,19 +48,22 @@ err_t http_client_header_print_fn(__unused httpc_state_t *connection, __unused v
 
 // Print body to stdout
 err_t http_client_receive_print_fn(void *arg, struct altcp_pcb *conn, struct pbuf *p, err_t err) {
-    if (!p) {
-        // Servidor fechou a conexão - encerra localmente também
-        printf("\nConexão encerrada pelo servidor. Fechando localmente...\n");
-        altcp_close(conn);
+    if (!p || err != ERR_OK) {
+        printf("\nConexão encerrada com erro (err=%d). Fechando localmente...\n", err);
+        if (conn) {
+            altcp_close(conn);  // ou altcp_abort(conn) em caso de falhas críticas
+        }
         return ERR_OK;
     }
-    printf("\ncontent err %d\n", err);
+
+    printf("\nRecebido conteúdo (err=%d):\n", err);
     u16_t offset = 0;
     while (offset < p->tot_len) {
         char c = (char)pbuf_get_at(p, offset++);
         putchar(c);
     }
-    pbuf_free(p); // libera buffer lido
+
+    pbuf_free(p); // libera buffer após uso
     return ERR_OK;
 }
 
@@ -93,6 +96,7 @@ static void internal_result_fn(void *arg, httpc_result_t httpc_result, u32_t rx_
     if (req->result_fn) {
         req->result_fn(req->callback_arg, httpc_result, rx_content_len, srv_res, err);
     }
+    
 }
 
 // Override altcp_tls_alloc to set sni

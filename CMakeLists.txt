@@ -46,8 +46,8 @@ target_include_directories(example_lwip_http_util INTERFACE
 )
 
 # Definições de Wi-Fi
-set(WIFI_SSID "LAPEC")
-set(WIFI_PASSWORD "L4p3c24*_")
+set(WIFI_SSID "POCO")
+set(WIFI_PASSWORD "12345678")
 
 # ================= Executable: gps_client =================
 add_executable(gps_client
