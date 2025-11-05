@@ -46,12 +46,14 @@ target_include_directories(example_lwip_http_util INTERFACE
 )
 
 # Definições de Wi-Fi
-set(WIFI_SSID "POCO")
-set(WIFI_PASSWORD "12345678")
+set(WIFI_SSID "Lapec_Professores")
+set(WIFI_PASSWORD "w1q2e3r4")
 
 # ================= Executable: gps_client =================
 add_executable(gps_client
     src/gps_client.c
+    src/ff.c
+    src/diskio.c
 )
 
 # passa SSID/SENHA via define
@@ -73,6 +75,7 @@ target_include_directories(gps_client PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
 )
 target_link_libraries(gps_client
+    hardware_spi
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
     example_lwip_http_util
