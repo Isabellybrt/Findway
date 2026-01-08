@@ -27,15 +27,21 @@
 #define LED_ON_PIN 11
 #define LED_OFF_PIN 13
 
+#define BUTTON_A 5 // GPIO do botão
+
 #define HOST "server-findway.onrender.com"
 #define URL_REQUEST "/mensagem?msg="
 #define BUFFER_SIZE 512
+
+void send_data(const char *data);
 
 char gps_buffer[BUFFER_SIZE];
 char http_response[BUFFER_SIZE];
 
 volatile bool led_on = false;
 volatile bool led_state_changed = false;
+absolute_time_t last_button_time;
+bool last_button_state = true;
 
 // Variáveis do SD
 FATFS fs;
@@ -160,6 +166,35 @@ void atualizar_leds()
 
     led_state_changed = false;
 }
+void verificar_botao()
+{
+    bool estado_atual = gpio_get(BUTTON_A);
+
+    if (last_button_state && !estado_atual)
+    {
+        if (absolute_time_diff_us(last_button_time, get_absolute_time()) > 250000)
+        {
+
+            led_on = !led_on;
+            led_state_changed = true;
+
+            printf("Botão pressionado → LED %s (enviando ao servidor)\n",
+                   led_on ? "ON 🟢" : "OFF 🔴");
+
+            // 📡 Envia estado do botão para o servidor
+            char msg[64];
+            snprintf(msg, sizeof(msg),
+                     "placa=LUV123, led=%s, origem=botao",
+                     led_on ? "on" : "off");
+
+            send_data(msg);
+
+            last_button_time = get_absolute_time();
+        }
+    }
+
+    last_button_state = estado_atual;
+}
 
 // Envia dados para o servidor
 void send_data(const char *data)
@@ -247,6 +282,7 @@ void read_gps_loop()
     int idx = 0;
     while (true)
     {
+        verificar_botao();
         atualizar_leds();
         if (uart_is_readable(UART_ID))
         {
@@ -282,6 +318,12 @@ int main()
     gpio_init(LED_OFF_PIN);
     gpio_set_dir(LED_OFF_PIN, GPIO_OUT);
     gpio_put(LED_OFF_PIN, 0);
+
+    // Configura botão
+    gpio_init(BUTTON_A);
+    gpio_set_dir(BUTTON_A, GPIO_IN);
+    gpio_pull_up(BUTTON_A); // botão para GND
+
     setup_uart();
 
     // Inicializa Wi-Fi
