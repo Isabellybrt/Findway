@@ -29,19 +29,32 @@
 
 #define BUTTON_A 5 // GPIO do botão
 
-#define HOST "server-findway.onrender.com"
+#define HOST "seu-backend.onrender.com"
 #define URL_REQUEST "/mensagem?msg="
+#define PLACA_VEICULO "ABC1D23"
+
+#define URL_IGNICAO "/veiculos/comando/ignicao?placa=" PLACA_VEICULO
+
 #define BUFFER_SIZE 512
 
+
 void send_data(const char *data);
+void enviar_estado_completo(const char *origem);
+
 
 char gps_buffer[BUFFER_SIZE];
 char http_response[BUFFER_SIZE];
+volatile bool controle_remoto = false;
 
 volatile bool led_on = false;
-volatile bool led_state_changed = false;
 absolute_time_t last_button_time;
 bool last_button_state = true;
+volatile bool ignicao_ligada = true;
+
+
+double current_latitude = 0.0;
+double current_longitude = 0.0;
+bool gps_valido = false;
 
 // Variáveis do SD
 FATFS fs;
@@ -53,6 +66,13 @@ DWORD get_fattime(void)
 {
     return ((DWORD)(2025 - 1980) << 25) | ((DWORD)7 << 21) | ((DWORD)9 << 16) | ((DWORD)16 << 11) | ((DWORD)45 << 5) | ((DWORD)0 >> 1);
 }
+err_t http_receive_ignicao_cb(
+    void *arg,
+    struct altcp_pcb *pcb,
+    struct pbuf *p,
+    err_t err
+);
+
 
 // Inicializa SD (agora com inicialização da SPI)
 void init_sd()
@@ -132,63 +152,99 @@ err_t http_receive_cb(void *arg, struct altcp_pcb *pcb,
 
     printf("Resposta do servidor:\n%s\n", http_response);
 
-    if (strstr(http_response, "\"state\": \"on\""))
-    {
-        led_on = true;
-        led_state_changed = true;
-    }
-    else if (strstr(http_response, "\"state\": \"off\""))
-    {
-        led_on = false;
-        led_state_changed = true;
-    }
+   
 
     pbuf_free(p);
     return ERR_OK;
 }
+void consultar_ignicao()
+{
+    EXAMPLE_HTTP_REQUEST_T req = {0};
+    req.hostname = HOST;
+    req.url = URL_IGNICAO;
+    req.tls_config = altcp_tls_create_config_client(NULL, 0);
+    req.recv_fn = http_receive_ignicao_cb;
+    
+
+
+    http_client_request_sync(
+        cyw43_arch_async_context(),
+        &req
+    );
+    altcp_tls_free_config(req.tls_config);
+}
 void atualizar_leds()
 {
-    if (!led_state_changed)
-        return;
-
-    if (led_on)
-    { // Led verde ligado
-        gpio_put(LED_ON_PIN, 1);
-        gpio_put(LED_OFF_PIN, 0);
-        printf("LED 11 LIGADO 🟢 | LED 13 DESLIGADO ⚫\n");
-    }
-    else
-    {
+    if (!ignicao_ligada) {
+        // 🔴 FORÇA FÍSICA ABSOLUTA
         gpio_put(LED_ON_PIN, 0);
         gpio_put(LED_OFF_PIN, 1);
-        printf("LED 11 DESLIGADO ⚫ | LED 13 LIGADO 🔴\n");
+        return;
     }
 
-    led_state_changed = false;
+    if (led_on) {
+        gpio_put(LED_ON_PIN, 1);
+        gpio_put(LED_OFF_PIN, 0);
+    } else {
+        gpio_put(LED_ON_PIN, 0);
+        gpio_put(LED_OFF_PIN, 1);
+    }
 }
+
+
+err_t http_receive_ignicao_cb(void *arg, struct altcp_pcb *pcb,
+                             struct pbuf *p, err_t err)
+{
+    if (!p) return ERR_OK;
+
+    char buffer[BUFFER_SIZE];
+    memset(buffer, 0, BUFFER_SIZE);
+    pbuf_copy_partial(p, buffer, p->tot_len, 0);
+
+    printf("Resposta ignição:\n%s\n", buffer);
+
+   if (strstr(buffer, "\"state\":\"off\"")) {
+    ignicao_ligada = false;
+
+    led_on = false;          // 🧠 estado lógico LIMPO
+    atualizar_leds();        // 🔴 força físico
+
+    printf("🚨 IGNIÇÃO OFF → SISTEMA BLOQUEADO\n");
+}
+else if (strstr(buffer, "\"state\":\"on\"")) {
+    ignicao_ligada = true;
+
+    printf("✅ IGNIÇÃO ON → SISTEMA LIBERADO\n");
+}
+
+
+
+
+    atualizar_leds();
+    pbuf_free(p);
+    return ERR_OK;
+}
+
+
 void verificar_botao()
 {
+    // 🔴 ignição OFF = botão inexistente
+    if (!ignicao_ligada) {
+        return;
+    }
+
     bool estado_atual = gpio_get(BUTTON_A);
 
     if (last_button_state && !estado_atual)
     {
         if (absolute_time_diff_us(last_button_time, get_absolute_time()) > 250000)
         {
-
             led_on = !led_on;
-            led_state_changed = true;
 
-            printf("Botão pressionado → LED %s (enviando ao servidor)\n",
+            printf("Botão pressionado → LED %s\n",
                    led_on ? "ON 🟢" : "OFF 🔴");
 
-            // 📡 Envia estado do botão para o servidor
-            char msg[64];
-            snprintf(msg, sizeof(msg),
-                     "placa=LUV123, led=%s, origem=botao",
-                     led_on ? "on" : "off");
-
-            send_data(msg);
-
+            enviar_estado_completo("botao");
             last_button_time = get_absolute_time();
         }
     }
@@ -208,14 +264,14 @@ void send_data(const char *data)
     EXAMPLE_HTTP_REQUEST_T req = {0};
     req.hostname = HOST;
     req.url = full_url;
-    req.tls_config = altcp_tls_create_config_client(NULL, 0);
+    req.port = 5000;
+    req.tls_config = NULL;
     req.headers_fn = http_client_header_print_fn;
     req.recv_fn = http_receive_cb;
 
     printf("Enviando: %s\n", data);
     int result = http_client_request_sync(cyw43_arch_async_context(), &req);
 
-    altcp_tls_free_config(req.tls_config);
     if (result != 0)
     {
         printf("Erro ao enviar! Código: %d\n", result);
@@ -266,14 +322,37 @@ void process_gpgga(char *sentence)
         longitude *= -1;
 
     char msg[BUFFER_SIZE];
-    snprintf(msg, BUFFER_SIZE, "placa=LUV123, latitude=%.6f, longitude=%.6f", latitude, longitude);
+snprintf(msg, BUFFER_SIZE,
+         "placa=%s, latitude=%.6f, longitude=%.6f",
+         PLACA_VEICULO,
+         latitude,
+         longitude);
 
-    // Envia pro servidor
+     current_latitude = latitude;
+    current_longitude = longitude;
+    gps_valido = true;
+}
+
+
+void enviar_estado_completo(const char *origem)
+{
+    if (!gps_valido)
+        return;
+
+    if (!ignicao_ligada) {
+        led_on = false;
+    }
+
+    char msg[BUFFER_SIZE];
+    snprintf(msg, BUFFER_SIZE,
+         "placa=%s, latitude=%.6f, longitude=%.6f, led=%s, origem=%s",
+         PLACA_VEICULO,
+         current_latitude,
+         current_longitude,
+         led_on ? "on" : "off",
+         origem);
+
     send_data(msg);
-
-    // Salva no SD
-    salvar_no_sd(msg);
-    salvar_no_sd("\n");
 }
 
 // Lê continuamente da UART e processa GPGGA
@@ -282,8 +361,11 @@ void read_gps_loop()
     int idx = 0;
     while (true)
     {
-        verificar_botao();
-        atualizar_leds();
+
+       verificar_botao();
+
+    atualizar_leds();
+        
         if (uart_is_readable(UART_ID))
         {
             char c = uart_getc(UART_ID);
@@ -296,6 +378,9 @@ void read_gps_loop()
                 if (strstr(gps_buffer, "$GPGGA"))
                 {
                     process_gpgga(gps_buffer);
+                    enviar_estado_completo("gps");
+                    consultar_ignicao();
+
                 }
             }
             else
@@ -311,6 +396,7 @@ int main()
     stdio_init_all();
     sleep_ms(200);
     printf("Iniciando...\n");
+
     gpio_init(LED_ON_PIN);
     gpio_set_dir(LED_ON_PIN, GPIO_OUT);
     gpio_put(LED_ON_PIN, 0);
@@ -319,32 +405,54 @@ int main()
     gpio_set_dir(LED_OFF_PIN, GPIO_OUT);
     gpio_put(LED_OFF_PIN, 0);
 
-    // Configura botão
     gpio_init(BUTTON_A);
     gpio_set_dir(BUTTON_A, GPIO_IN);
-    gpio_pull_up(BUTTON_A); // botão para GND
+    gpio_pull_up(BUTTON_A);
 
     setup_uart();
 
-    // Inicializa Wi-Fi
+    // Inicializa Wi-Fi (uma única vez)
     if (cyw43_arch_init())
     {
         printf("Falha ao iniciar Wi-Fi\n");
-        return 1;
+        while (true)
+        {
+            sleep_ms(1000);
+        }
     }
 
     cyw43_arch_enable_sta_mode();
-    if (cyw43_arch_wifi_connect_timeout_ms("Lapec_Professores", "w1q2e3r4", CYW43_AUTH_WPA2_AES_PSK, 10000))
-    {
-        printf("Erro ao conectar no Wi-Fi\n");
-        return 1;
-    }
-    printf("Wi-Fi conectado com sucesso!\n");
 
-    // Inicializa SD
+    printf("Conectando ao Wi-Fi...\n");
+
+    // 🔁 LOOP ATÉ CONECTAR
+    while (true)
+    {
+        int err = cyw43_arch_wifi_connect_timeout_ms(
+            "Lapec_Professores",
+            "w1q2e3r4",
+            CYW43_AUTH_WPA2_AES_PSK,
+            10000
+        );
+
+        if (err == 0)
+        {
+            printf("Wi-Fi conectado com sucesso!\n");
+            gpio_put(LED_ON_PIN, 1);   // LED indica Wi-Fi OK
+            break;
+        }
+        else
+        {
+            printf("Falha ao conectar no Wi-Fi. Tentando novamente...\n");
+            gpio_put(LED_ON_PIN, 0);
+            sleep_ms(3000); // espera antes de tentar novamente
+        }
+    }
+
+    // Inicializa SD após Wi-Fi conectado
     init_sd();
 
-    // Loop principal GPS
+    // Loop principal (GPS + sistema)
     read_gps_loop();
 
     cyw43_arch_deinit();
